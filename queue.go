@@ -15,7 +15,7 @@ type PriorityQueue []*Item
 func (pq PriorityQueue) Len() int { return len(pq) }
 
 func (pq PriorityQueue) Less(i, j int) bool {
-	return pq[i].priority < pq[j].priority
+	return pq[i].priority > pq[j].priority
 }
 
 func (pq PriorityQueue) Swap(i, j int) {
@@ -24,11 +24,11 @@ func (pq PriorityQueue) Swap(i, j int) {
 	pq[j].index = j
 }
 
-func (pq PriorityQueue) Push(x any) {
-	n := len(pq)
+func (pq *PriorityQueue) Push(x any) {
+	n := len(*pq)
 	item := x.(*Item)
 	item.index = n
-	pq = append(pq, item)
+	*pq = append(*pq, item)
 }
 
 func (pq PriorityQueue) Peek() any {
@@ -50,4 +50,8 @@ func (pq *PriorityQueue) Pop() any {
 func (pq *PriorityQueue) update(item *Item, priority int) {
 	item.priority = priority
 	heap.Fix(pq, item.index)
+}
+
+func (pq PriorityQueue) get(index int) *Item {
+	return pq[index]
 }

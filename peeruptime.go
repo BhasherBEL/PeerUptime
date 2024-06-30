@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"container/heap"
+	"encoding/json"
 	"fmt"
-	"math"
+
+	//"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -23,13 +26,15 @@ type Config struct {
 	MemoryScoreFactor   int
 	VariableScoreFactor int
 	WaitingTime         int // ms
+	Server              bool
+	Client              bool
 }
 
 type Check struct {
 	Time       time.Time
-	PingDelay  float64
-	PongDelay  float64
-	LocalDelay float64
+	PingDelay  float64 // ms
+	PongDelay  float64 // ms
+	LocalDelay float64 // ms
 	Success    bool
 }
 
@@ -50,8 +55,8 @@ func (cs Checks) Append(c Check) {
 
 func (cs Checks) AmortizedScore() float64 {
 	score := float64(scoreCnt)
-	score += float64(config.VariableScoreFactor) * math.Abs(cs.Score-0.5)
-	score += float64(config.VariableScoreFactor) * rand.NormFloat64()
+	//score += float64(config.VariableScoreFactor) * math.Abs(cs.Score-0.5)
+	//score += float64(config.VariableScoreFactor) * rand.NormFloat64()
 	return score
 }
 
@@ -59,6 +64,23 @@ type Host struct {
 	URL      string
 	Priority int
 	Checks   *Checks
+}
+
+type Response struct {
+	Status      string
+	Config      *SharedConfig
+	Discoveries []string
+}
+
+type SharedConfig struct {
+}
+
+type StatusRequest struct {
+	Discovery          bool
+	DiscoveryLimit     int
+	Discoverable       bool
+	DiscoverableURL    string
+	DiscoverableConfig *SharedConfig
 }
 
 // Helpers
@@ -103,11 +125,13 @@ var config = Config{
 	DiscoveryLimit:      intOrDefault(os.Getenv("PEER_DISCOVERY_LIMIT"), 5),
 	Ip:                  stringOrDefault(os.Getenv("PEER_IP"), "0.0.0.0"),
 	Port:                stringOrDefault(os.Getenv("PEER_PORT"), "8080"),
-	URL:                 stringOrDefault(os.Getenv("PEER_URL"), "http://localhost:8080"),
+	URL:                 stringOrDefault(os.Getenv("PEER_URL"), "http://127.0.0.1:8080"),
 	DiscoveryURL:        stringOrDefault(os.Getenv("PEER_DISCOVERY_URL"), "http://localhost:8081"),
 	MemoryScoreFactor:   intOrDefault(os.Getenv("PEER_MEMORY_SCORE_FACTOR"), 10),
 	VariableScoreFactor: intOrDefault(os.Getenv("PEER_VARIABLE_SCORE_FACTOR"), 1000),
 	WaitingTime:         intOrDefault(os.Getenv("PEER_WAITING_TIME"), 1000),
+	Server:              stringOrDefault(os.Getenv("PEER_SERVER"), "true") == "true",
+	Client:              stringOrDefault(os.Getenv("PEER_CLIENT"), "true") == "true",
 }
 
 var hosts = map[string]Host{
@@ -136,17 +160,21 @@ func main() {
 	}
 	heap.Init(&pq)
 
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("OK"))
-	})
+	if config.Server {
+		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("OK"))
+		})
 
-	http.HandleFunc("/api/status", status)
+		http.HandleFunc("/api/status", statusHandler)
 
-	go http.ListenAndServe(config.Ip+":"+config.Port, nil)
-	fmt.Println("Server started on " + config.Ip + ":" + config.Port)
+		go http.ListenAndServe(config.Ip+":"+config.Port, nil)
+		fmt.Println("Server started on " + config.Ip + ":" + config.Port)
+	}
 
-	go loopCheck()
-	fmt.Println("Check loop started")
+	if config.Client {
+		go loopCheck()
+		fmt.Println("Check loop started")
+	}
 
 	sigint := make(chan os.Signal, 1)
 	signal.Notify(sigint, os.Interrupt)
@@ -157,14 +185,62 @@ func main() {
 	os.Exit(0)
 }
 
-func status(w http.ResponseWriter, r *http.Request) {
-	//params := r.URL.Query()
-	//discovery := params.Get("discovery") == "true"
-	//discoveryLimit := intOrDefault(params.Get("discoveryLimit"), config.DiscoveryLimit)
+func statusHandler(w http.ResponseWriter, r *http.Request) {
+	request := &StatusRequest{}
 
+	json.NewDecoder(r.Body).Decode(request)
+
+	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Time", time.Now().UTC().Format(time.RFC3339Nano))
 
-	w.Write([]byte("OK"))
+	discoveries := []string{}
+
+	if request.Discovery {
+		amount := min(request.DiscoveryLimit, config.DiscoveryLimit)
+
+		if pq.Len() < amount {
+			for url := range hosts {
+				discoveries = append(discoveries, url)
+			}
+		} else {
+			for i := 0; i < amount; i++ {
+				discoveryIndex := rand.Intn(pq.Len())
+				discoveryItem := pq[discoveryIndex]
+				discoveries = append(discoveries, discoveryItem.value)
+			}
+		}
+	}
+
+	response := Response{
+		Status:      "OK",
+		Config:      &SharedConfig{},
+		Discoveries: discoveries,
+	}
+
+	json.NewEncoder(w).Encode(response)
+
+	go statusLocal(request)
+}
+
+func statusLocal(request *StatusRequest) {
+	if request.Discoverable && request.DiscoverableURL != "" && request.DiscoverableURL != config.URL {
+		if _, ok := hosts[request.DiscoverableURL]; !ok {
+			fmt.Println("\nDiscovered new host: " + request.DiscoverableURL)
+			hosts[request.DiscoverableURL] = Host{
+				URL:      request.DiscoverableURL,
+				Priority: 0,
+				Checks:   &Checks{Entries: make([]*Check, 0), Size: 0, Score: 0.5, Average: 0},
+			}
+
+			item := &Item{
+				value:    request.DiscoverableURL,
+				priority: 100000,
+			}
+
+			heap.Push(&pq, item)
+			pq.update(item, scoreCnt)
+		}
+	}
 }
 
 func loopCheck() {
@@ -181,7 +257,7 @@ func check() {
 	url := item.value
 	host := hosts[url]
 
-	fmt.Print("Checking " + url + " ... ")
+	fmt.Printf("Checking %v ... ", url)
 
 	check := checkHost(host)
 	host.Checks.Append(check)
@@ -200,16 +276,59 @@ func check() {
 func checkHost(host Host) Check {
 	before := time.Now().UTC()
 
-	resp, err := http.Get(host.URL + "/api/status")
+	request := StatusRequest{
+		Discovery:          true,
+		DiscoveryLimit:     config.DiscoveryLimit,
+		Discoverable:       true,
+		DiscoverableURL:    config.URL,
+		DiscoverableConfig: &SharedConfig{},
+	}
+
+	jsonData, err := json.Marshal(request)
+	if err != nil {
+		fmt.Printf("%v ", err)
+		return Check{Time: before, Success: false}
+	}
+
+	resp, err := http.Post(host.URL+"/api/status", "application/json", bytes.NewBuffer(jsonData))
 	after := time.Now().UTC()
 	if err != nil {
+		fmt.Printf("%v ", err)
 		return Check{Time: before, Success: false}
 	}
 	defer resp.Body.Close()
 
 	pingTime, err := time.Parse(time.RFC3339, resp.Header.Get("X-Request-Time"))
 	if err != nil {
+		fmt.Printf("%v ", err)
 		return Check{Time: before, Success: false}
+	}
+
+	response := &Response{}
+
+	json.NewDecoder(resp.Body).Decode(response)
+
+	for _, discovery := range response.Discoveries {
+		if discovery == config.URL {
+			continue
+		}
+
+		if _, ok := hosts[discovery]; !ok {
+			fmt.Println("\nDiscovered new host: " + discovery)
+			hosts[discovery] = Host{
+				URL:      discovery,
+				Priority: 0,
+				Checks:   &Checks{Entries: make([]*Check, 0), Size: 0, Score: 0.5, Average: 0},
+			}
+
+			item := &Item{
+				value:    discovery,
+				priority: 100000,
+			}
+
+			heap.Push(&pq, item)
+			pq.update(item, scoreCnt)
+		}
 	}
 
 	return Check{
