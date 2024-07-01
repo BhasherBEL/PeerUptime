@@ -1,17 +1,14 @@
 package main
 
 import (
+	"bhasherbel/peeruptime/types"
+	"bhasherbel/peeruptime/utils"
 	"bytes"
-	"container/heap"
 	"encoding/json"
 	"fmt"
-
-	//"math"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"time"
 )
 
@@ -28,42 +25,6 @@ type Config struct {
 	WaitingTime         int // ms
 	Server              bool
 	Client              bool
-}
-
-type Check struct {
-	Time       time.Time
-	PingDelay  float64 // ms
-	PongDelay  float64 // ms
-	LocalDelay float64 // ms
-	Success    bool
-}
-
-type Checks struct {
-	Entries []*Check
-	Size    int
-	Score   float64
-	Average float64
-}
-
-func (cs Checks) Append(c Check) {
-	cs.Entries = append(cs.Entries, &c)
-	cs.Average = (cs.Average*float64(cs.Size) + boolToFloat(c.Success)) / float64(cs.Size+1)
-
-	reverseFactor := 1. / float64(config.MemoryScoreFactor)
-	cs.Score = cs.Average*(1.-reverseFactor) + boolToFloat(c.Success)*reverseFactor
-}
-
-func (cs Checks) AmortizedScore() float64 {
-	score := float64(scoreCnt)
-	//score += float64(config.VariableScoreFactor) * math.Abs(cs.Score-0.5)
-	//score += float64(config.VariableScoreFactor) * rand.NormFloat64()
-	return score
-}
-
-type Host struct {
-	URL      string
-	Priority int
-	Checks   *Checks
 }
 
 type Response struct {
@@ -83,82 +44,27 @@ type StatusRequest struct {
 	DiscoverableConfig *SharedConfig
 }
 
-// Helpers
-
-func intOrDefault(value string, defaultValue int) int {
-	if value == "" {
-		return defaultValue
-	}
-
-	intValue, err := strconv.Atoi(value)
-	if err != nil {
-		return defaultValue
-	} else {
-		return intValue
-	}
-}
-
-func stringOrDefault(value string, defaultValue string) string {
-	if value == "" {
-		return defaultValue
-	}
-	return value
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}
-
-func boolToFloat(b bool) float64 {
-	if b {
-		return 1.
-	}
-	return 0.
-}
-
 // Global variables
 
 var config = Config{
-	DiscoveryLimit:      intOrDefault(os.Getenv("PEER_DISCOVERY_LIMIT"), 5),
-	Ip:                  stringOrDefault(os.Getenv("PEER_IP"), "0.0.0.0"),
-	Port:                stringOrDefault(os.Getenv("PEER_PORT"), "8080"),
-	URL:                 stringOrDefault(os.Getenv("PEER_URL"), "http://127.0.0.1:8080"),
-	DiscoveryURL:        stringOrDefault(os.Getenv("PEER_DISCOVERY_URL"), "http://localhost:8081"),
-	MemoryScoreFactor:   intOrDefault(os.Getenv("PEER_MEMORY_SCORE_FACTOR"), 10),
-	VariableScoreFactor: intOrDefault(os.Getenv("PEER_VARIABLE_SCORE_FACTOR"), 1000),
-	WaitingTime:         intOrDefault(os.Getenv("PEER_WAITING_TIME"), 1000),
-	Server:              stringOrDefault(os.Getenv("PEER_SERVER"), "true") == "true",
-	Client:              stringOrDefault(os.Getenv("PEER_CLIENT"), "true") == "true",
+	DiscoveryLimit:      utils.IntOrDefault(os.Getenv("PEER_DISCOVERY_LIMIT"), 5),
+	Ip:                  utils.StringOrDefault(os.Getenv("PEER_IP"), "0.0.0.0"),
+	Port:                utils.StringOrDefault(os.Getenv("PEER_PORT"), "8080"),
+	URL:                 utils.StringOrDefault(os.Getenv("PEER_URL"), "http://127.0.0.1:8080"),
+	DiscoveryURL:        utils.StringOrDefault(os.Getenv("PEER_DISCOVERY_URL"), "http://localhost:8081"),
+	MemoryScoreFactor:   utils.IntOrDefault(os.Getenv("PEER_MEMORY_SCORE_FACTOR"), 10),
+	VariableScoreFactor: utils.IntOrDefault(os.Getenv("PEER_VARIABLE_SCORE_FACTOR"), 1000),
+	WaitingTime:         utils.IntOrDefault(os.Getenv("PEER_WAITING_TIME"), 1000),
+	Server:              utils.StringOrDefault(os.Getenv("PEER_SERVER"), "true") == "true",
+	Client:              utils.StringOrDefault(os.Getenv("PEER_CLIENT"), "true") == "true",
 }
 
-var hosts = map[string]Host{
-	config.DiscoveryURL: {
-		URL:      config.DiscoveryURL,
-		Priority: 0,
-		Checks:   &Checks{Entries: make([]*Check, 0), Size: 0, Score: 0.5, Average: 0},
-	},
-}
-
-var pq = make(PriorityQueue, len(hosts))
-
-var scoreCnt = 0
+var hosts = types.NewHosts()
 
 // Main
 
 func main() {
-	i := 0
-	for url := range hosts {
-		pq[i] = &Item{
-			value:    url,
-			priority: scoreCnt,
-			index:    i,
-		}
-		i++
-	}
-	heap.Init(&pq)
+	hosts.AppendNew(config.DiscoveryURL)
 
 	if config.Server {
 		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -193,54 +99,22 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Time", time.Now().UTC().Format(time.RFC3339Nano))
 
-	discoveries := []string{}
-
-	if request.Discovery {
-		amount := min(request.DiscoveryLimit, config.DiscoveryLimit)
-
-		if pq.Len() < amount {
-			for url := range hosts {
-				discoveries = append(discoveries, url)
-			}
-		} else {
-			for i := 0; i < amount; i++ {
-				discoveryIndex := rand.Intn(pq.Len())
-				discoveryItem := pq[discoveryIndex]
-				discoveries = append(discoveries, discoveryItem.value)
-			}
-		}
-	}
-
 	response := Response{
 		Status:      "OK",
 		Config:      &SharedConfig{},
-		Discoveries: discoveries,
+		Discoveries: *hosts.Keys,
 	}
 
 	json.NewEncoder(w).Encode(response)
 
-	go statusLocal(request)
-}
-
-func statusLocal(request *StatusRequest) {
-	if request.Discoverable && request.DiscoverableURL != "" && request.DiscoverableURL != config.URL {
-		if _, ok := hosts[request.DiscoverableURL]; !ok {
-			fmt.Println("\nDiscovered new host: " + request.DiscoverableURL)
-			hosts[request.DiscoverableURL] = Host{
-				URL:      request.DiscoverableURL,
-				Priority: 0,
-				Checks:   &Checks{Entries: make([]*Check, 0), Size: 0, Score: 0.5, Average: 0},
+	go func() {
+		if request.Discoverable && request.DiscoverableURL != "" && request.DiscoverableURL != config.URL {
+			if _, ok := hosts.Get(request.DiscoverableURL); !ok {
+				fmt.Println("Discovered new host: " + request.DiscoverableURL)
+				hosts.AppendNew(request.DiscoverableURL)
 			}
-
-			item := &Item{
-				value:    request.DiscoverableURL,
-				priority: 100000,
-			}
-
-			heap.Push(&pq, item)
-			pq.update(item, scoreCnt)
 		}
-	}
+	}()
 }
 
 func loopCheck() {
@@ -251,16 +125,14 @@ func loopCheck() {
 }
 
 func check() {
-	scoreCnt++
-
-	item := pq.Peek().(*Item)
-	url := item.value
-	host := hosts[url]
+	item := hosts.Peek()
+	url := item.Value
+	host, _ := hosts.Get(url)
 
 	fmt.Printf("Checking %v ... ", url)
 
 	check := checkHost(host)
-	host.Checks.Append(check)
+	host.Checks.Append(check, float64(config.MemoryScoreFactor))
 
 	if check.Success {
 		fmt.Printf("success (%vms, %vms, %vms)\n", check.PingDelay, check.PongDelay, check.LocalDelay)
@@ -270,10 +142,10 @@ func check() {
 
 	newPriority := int(host.Checks.AmortizedScore())
 
-	pq.update(item, newPriority)
+	hosts.UpdatePriority(item, newPriority)
 }
 
-func checkHost(host Host) Check {
+func checkHost(host *types.Host) types.Check {
 	before := time.Now().UTC()
 
 	request := StatusRequest{
@@ -287,21 +159,21 @@ func checkHost(host Host) Check {
 	jsonData, err := json.Marshal(request)
 	if err != nil {
 		fmt.Printf("%v ", err)
-		return Check{Time: before, Success: false}
+		return types.Check{Time: before, Success: false}
 	}
 
 	resp, err := http.Post(host.URL+"/api/status", "application/json", bytes.NewBuffer(jsonData))
 	after := time.Now().UTC()
 	if err != nil {
 		fmt.Printf("%v ", err)
-		return Check{Time: before, Success: false}
+		return types.Check{Time: before, Success: false}
 	}
 	defer resp.Body.Close()
 
 	pingTime, err := time.Parse(time.RFC3339, resp.Header.Get("X-Request-Time"))
 	if err != nil {
 		fmt.Printf("%v ", err)
-		return Check{Time: before, Success: false}
+		return types.Check{Time: before, Success: false}
 	}
 
 	response := &Response{}
@@ -312,26 +184,13 @@ func checkHost(host Host) Check {
 		if discovery == config.URL {
 			continue
 		}
-
-		if _, ok := hosts[discovery]; !ok {
+		if _, ok := hosts.Get(discovery); !ok {
 			fmt.Println("\nDiscovered new host: " + discovery)
-			hosts[discovery] = Host{
-				URL:      discovery,
-				Priority: 0,
-				Checks:   &Checks{Entries: make([]*Check, 0), Size: 0, Score: 0.5, Average: 0},
-			}
-
-			item := &Item{
-				value:    discovery,
-				priority: 100000,
-			}
-
-			heap.Push(&pq, item)
-			pq.update(item, scoreCnt)
+			hosts.AppendNew(discovery)
 		}
 	}
 
-	return Check{
+	return types.Check{
 		Time:       before,
 		PingDelay:  float64(pingTime.Sub(before).Microseconds()) / 1000.,
 		PongDelay:  float64(after.Sub(pingTime).Microseconds()) / 1000.,
