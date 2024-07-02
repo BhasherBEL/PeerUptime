@@ -23,3 +23,10 @@ func StringOrDefault(value string, defaultValue string) string {
 	}
 	return value
 }
+
+func BoolOrDefault(value string, defaultValue bool) bool {
+	if value == "" {
+		return defaultValue
+	}
+	return value == "true"
+}

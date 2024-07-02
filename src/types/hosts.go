@@ -10,15 +10,15 @@ type Host struct {
 	Checks   *Checks
 }
 
-type hosts struct {
+type Hosts struct {
 	entries map[string]*Host
 	Keys    *[]string
 	Size    int
 	pq      *PriorityQueue
 }
 
-func NewHosts() *hosts {
-	hs := &hosts{
+func NewHosts() *Hosts {
+	hs := &Hosts{
 		entries: make(map[string]*Host),
 		Keys:    &[]string{},
 		Size:    0,
@@ -28,20 +28,20 @@ func NewHosts() *hosts {
 	return hs
 }
 
-func (hs hosts) Get(url string) (*Host, bool) {
+func (hs Hosts) Get(url string) (*Host, bool) {
 	h, ok := hs.entries[url]
 	return h, ok
 }
 
-func (hs hosts) Peek() *Item {
+func (hs Hosts) Peek() *Item {
 	return hs.pq.Peek().(*Item)
 }
 
-func (hs hosts) UpdatePriority(item *Item, priority int) {
+func (hs Hosts) UpdatePriority(item *Item, priority int) {
 	hs.pq.Update(item, priority)
 }
 
-func (hs hosts) Append(h *Host) {
+func (hs Hosts) Append(h *Host) {
 	hs.entries[h.URL] = h
 	*hs.Keys = append(*hs.Keys, h.URL)
 	hs.Size++
@@ -51,7 +51,7 @@ func (hs hosts) Append(h *Host) {
 	})
 }
 
-func (hs hosts) AppendNew(url string) {
+func (hs Hosts) AppendNew(url string) {
 	h := &Host{
 		URL:      url,
 		Priority: scoreCnt,
