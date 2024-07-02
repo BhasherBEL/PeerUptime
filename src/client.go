@@ -22,24 +22,32 @@ func (c *Client) Start() {
 }
 
 func (c *Client) check() {
-	item := c.Hosts.Peek()
-	url := item.Value
-	host, _ := hosts.Get(url)
-
-	fmt.Printf("Checking %v ... ", url)
-
-	check := c.checkHost(host)
-	host.Checks.Append(check, float64(c.Config.MemoryFactor))
-
-	if check.Success {
-		fmt.Printf("success (%vms, %vms, %vms)\n", check.PingDelay, check.PongDelay, check.LocalDelay)
-	} else {
-		fmt.Println("Failed")
+	host, ok := c.Hosts.Peek()
+	if !ok {
+		fmt.Println("No hosts to check")
+		return
 	}
 
-	newPriority := int(host.Checks.AmortizedScore())
+	check := c.checkHost(host)
 
-	hosts.UpdatePriority(item, newPriority)
+	if !check.Success && (host.Checks.Last() == nil || *host.Checks.Last()) {
+		host.UnseenTime = &check.Time
+	}
+
+	if host.Checks.Last() == nil || check.Success != *host.Checks.Last() {
+		if check.Success {
+			if host.UnseenTime != nil {
+				offineTime := time.Now().UTC().Sub(*host.UnseenTime)
+				fmt.Println("Host " + host.URL + " is back online after " + offineTime.String())
+			} else {
+				fmt.Println("Host " + host.URL + " is online for the first time")
+			}
+		} else {
+			fmt.Println("Host " + host.URL + " is offline")
+		}
+	}
+
+	host.Checks.Append(check, float64(c.Config.MemoryFactor))
 }
 
 func (c *Client) checkHost(host *types.Host) types.Check {
@@ -54,21 +62,18 @@ func (c *Client) checkHost(host *types.Host) types.Check {
 
 	jsonData, err := json.Marshal(request)
 	if err != nil {
-		fmt.Printf("%v ", err)
 		return types.Check{Time: before, Success: false}
 	}
 
 	resp, err := http.Post(host.URL+"/api/status", "application/json", bytes.NewBuffer(jsonData))
 	after := time.Now().UTC()
 	if err != nil {
-		fmt.Printf("%v ", err)
 		return types.Check{Time: before, Success: false}
 	}
 	defer resp.Body.Close()
 
 	pingTime, err := time.Parse(time.RFC3339, resp.Header.Get("X-Request-Time"))
 	if err != nil {
-		fmt.Printf("%v ", err)
 		return types.Check{Time: before, Success: false}
 	}
 
@@ -81,7 +86,7 @@ func (c *Client) checkHost(host *types.Host) types.Check {
 			continue
 		}
 		if _, ok := hosts.Get(discovery); !ok {
-			fmt.Println("\nDiscovered new host: " + discovery)
+			fmt.Println("Discovered new host: " + discovery)
 			hosts.AppendNew(discovery)
 		}
 	}

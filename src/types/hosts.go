@@ -1,20 +1,21 @@
 package types
 
 import (
-	"container/heap"
+	"time"
 )
 
 type Host struct {
-	URL      string
-	Priority int
-	Checks   *Checks
+	URL        string
+	Priority   int
+	Checks     *Checks
+	UnseenTime *time.Time
 }
 
 type Hosts struct {
 	entries map[string]*Host
 	Keys    *[]string
 	Size    int
-	pq      *PriorityQueue
+	current int
 }
 
 func NewHosts() *Hosts {
@@ -22,36 +23,38 @@ func NewHosts() *Hosts {
 		entries: make(map[string]*Host),
 		Keys:    &[]string{},
 		Size:    0,
-		pq:      &PriorityQueue{},
+		current: 0,
 	}
-	heap.Init(hs.pq)
 	return hs
 }
 
-func (hs Hosts) Get(url string) (*Host, bool) {
+func (hs *Hosts) Get(url string) (*Host, bool) {
 	h, ok := hs.entries[url]
 	return h, ok
 }
 
-func (hs Hosts) Peek() *Item {
-	return hs.pq.Peek().(*Item)
+func (hs *Hosts) Peek() (*Host, bool) {
+	if hs.Size == 0 {
+		return nil, false
+	}
+
+	h, o := hs.Get((*hs.Keys)[hs.current])
+
+	hs.current++
+	if hs.current >= hs.Size {
+		hs.current = 0
+	}
+
+	return h, o
 }
 
-func (hs Hosts) UpdatePriority(item *Item, priority int) {
-	hs.pq.Update(item, priority)
-}
-
-func (hs Hosts) Append(h *Host) {
+func (hs *Hosts) Append(h *Host) {
 	hs.entries[h.URL] = h
 	*hs.Keys = append(*hs.Keys, h.URL)
 	hs.Size++
-	hs.pq.Push(&Item{
-		Value:    h.URL,
-		Priority: scoreCnt,
-	})
 }
 
-func (hs Hosts) AppendNew(url string) {
+func (hs *Hosts) AppendNew(url string) {
 	h := &Host{
 		URL:      url,
 		Priority: scoreCnt,
@@ -61,6 +64,7 @@ func (hs Hosts) AppendNew(url string) {
 			Score:   0.5,
 			Average: 0,
 		},
+		UnseenTime: nil,
 	}
 	hs.Append(h)
 }

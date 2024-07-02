@@ -2,6 +2,7 @@ package types
 
 import (
 	"container/heap"
+	"fmt"
 )
 
 type Item struct {
@@ -50,6 +51,11 @@ func (pq *PriorityQueue) Pop() any {
 func (pq *PriorityQueue) Update(item *Item, Priority int) {
 	item.Priority = Priority
 	heap.Fix(pq, item.Index)
+
+	for i := range *pq {
+		fmt.Printf("%v, ", *(*pq)[i])
+	}
+	fmt.Println()
 }
 
 func (pq PriorityQueue) Get(Index int) *Item {
